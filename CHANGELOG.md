@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-03-17
+
+### Added
+- User authentication via Auth.js v5 (Next.js App Router): Google OAuth and email magic link sign-in
+- Prisma ORM with SQLite (dev) / Postgres-compatible schema — User, Account, Session, VerificationToken, QuizRecord models
+- Login page (`/login`) matching existing dark theme — Google button + email magic link form with Suspense boundary
+- Quiz history page (`/history`) — shows 50 most recent quizzes per user, newest first
+- `QuizRecord` saved per authenticated user on every successful quiz generation (filename, page count, question JSON)
+- `quizRecordId` returned from `/api/quiz` and stored in session state for future retake/share features
+- Route protection via `proxy.ts` (Next.js 16 proxy convention) — unauthenticated users redirected to `/login` with `callbackUrl`
+- `components/session-provider.tsx` — client-side `<SessionProvider>` wrapper for App Router compatibility
+
+### Changed
+- `/api/quiz` now requires authentication — returns 401 for unauthenticated requests
+- Rate limiting replaced: IP-based in-memory limiter removed; per-user DB quota (5 requests / 60s via `QuizRecord` count) added
+- API routes excluded from proxy matcher so `fetch()` calls receive 401 (not a redirect) on session expiry
+- `QuizState` type extended with optional `quizRecordId?: string`
+
 ## [0.1.1] - 2026-03-16
 
 ### Added
