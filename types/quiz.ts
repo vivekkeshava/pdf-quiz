@@ -12,4 +12,5 @@ export interface QuizState {
   submitted: boolean;
   fileName: string;
   pageCount: number;
+  quizRecordId?: string; // DB record ID (set when user is authenticated)
 }
