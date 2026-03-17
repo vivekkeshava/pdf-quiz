@@ -6,8 +6,9 @@ export async function extractTextFromPdf(buffer: Buffer): Promise<{
 }> {
   // Dynamic import to avoid issues with Next.js edge runtime
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const pdfParse = require("pdf-parse") as (buf: Buffer) => Promise<{ text: string; numpages: number }>;
-  const data = await pdfParse(buffer);
+  const { PDFParse } = require("pdf-parse") as { PDFParse: new (opts: { data: Buffer }) => { getText: () => Promise<{ text: string; total: number }> } };
+  const parser = new PDFParse({ data: buffer });
+  const data = await parser.getText();
 
   let text = data.text || "";
 
@@ -19,6 +20,6 @@ export async function extractTextFromPdf(buffer: Buffer): Promise<{
 
   return {
     text: text.trim(),
-    pageCount: data.numpages,
+    pageCount: data.total,
   };
 }
