@@ -1,30 +1,48 @@
+// Request pipeline:
+//
+//   POST /api/quiz
+//       │
+//       ▼
+//   auth() ──── no session ──▶ 401
+//       │
+//       ▼
+//   per-user quota check (5 req / 60s via QuizRecord count)
+//       │   ── over limit ──▶ 429
+//       ▼
+//   validate form data (file type, size, question count)
+//       │   ── invalid ──▶ 400 / 413 / 422
+//       ▼
+//   extractTextFromPdf()
+//       │   ── error ──▶ 500
+//       │   ── no text ──▶ 422
+//       ▼
+//   generateQuiz() with one retry
+//       │   ── both fail ──▶ 502 / 422
+//       ▼
+//   prisma.quizRecord.create() ── error ──▶ log + continue (T-1A)
+//       │
+//       ▼
+//   return { questions, pageCount, quizRecordId }
+
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { auth } from "@/lib/auth";
+import { prisma } from "@/lib/db";
 import { extractTextFromPdf } from "@/lib/pdf";
 import { generateQuiz } from "@/lib/claude";
 
 const MAX_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
-
-// Simple in-memory rate limiter: max 5 requests per IP per 60 seconds
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT = 5;
 const RATE_WINDOW_MS = 60_000;
 
-function checkRateLimit(ip: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(ip);
-
-  if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
-    return true;
-  }
-
-  if (entry.count >= RATE_LIMIT) {
-    return false;
-  }
-
-  entry.count++;
-  return true;
+async function checkUserQuota(userId: string): Promise<boolean> {
+  const count = await prisma.quizRecord.count({
+    where: {
+      userId,
+      createdAt: { gte: new Date(Date.now() - RATE_WINDOW_MS) },
+    },
+  });
+  return count < RATE_LIMIT;
 }
 
 const RequestSchema = z.object({
@@ -32,10 +50,16 @@ const RequestSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  const ip =
-    req.headers.get("x-forwarded-for")?.split(",")[0].trim() ?? "unknown";
+  // Auth check — must be logged in
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const userId = session.user.id;
 
-  if (!checkRateLimit(ip)) {
+  // Per-user rate limit (replaces old IP-based limiter)
+  const withinQuota = await checkUserQuota(userId);
+  if (!withinQuota) {
     return NextResponse.json(
       { error: "Too many requests. Please wait a minute before trying again." },
       { status: 429 }
@@ -106,15 +130,14 @@ export async function POST(req: NextRequest) {
   }
 
   // Generate quiz — retry once on failure
+  let questions: Awaited<ReturnType<typeof generateQuiz>>;
   try {
-    const questions = await generateQuiz(text, count);
-    return NextResponse.json({ questions, pageCount });
+    questions = await generateQuiz(text, count);
   } catch (firstErr) {
     console.error("First Claude attempt failed:", firstErr);
 
     try {
-      const questions = await generateQuiz(text, count);
-      return NextResponse.json({ questions, pageCount });
+      questions = await generateQuiz(text, count);
     } catch (secondErr) {
       console.error("Second Claude attempt failed:", secondErr);
 
@@ -137,4 +160,22 @@ export async function POST(req: NextRequest) {
       );
     }
   }
+
+  // Save quiz record — T-1A: return quiz even if DB write fails
+  let quizRecordId: string | undefined;
+  try {
+    const record = await prisma.quizRecord.create({
+      data: {
+        userId,
+        fileName: file.name,
+        pageCount,
+        questions: JSON.stringify(questions),
+      },
+    });
+    quizRecordId = record.id;
+  } catch (dbErr) {
+    console.error("Failed to save quiz record (quiz still returned):", dbErr);
+  }
+
+  return NextResponse.json({ questions, pageCount, quizRecordId });
 }

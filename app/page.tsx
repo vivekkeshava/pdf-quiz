@@ -53,7 +53,7 @@ export default function LandingPage() {
         throw new Error(data.error || "Failed to generate quiz");
       }
 
-      const { questions, pageCount } = await res.json();
+      const { questions, pageCount, quizRecordId } = await res.json();
 
       saveQuizState({
         questions,
@@ -62,6 +62,7 @@ export default function LandingPage() {
         submitted: false,
         pageCount,
         fileName: file.name,
+        quizRecordId,
       });
 
       router.push("/quiz");
